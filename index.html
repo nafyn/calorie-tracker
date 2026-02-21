@@ -525,11 +525,11 @@ async function saveAutoProfile(p) {
 }
 
 /**
- * Deficit
+ * Deficit (negative = deficit, positive = surplus)
  */
 async function deficitOf(entry) {
   const bmr = await bmrForDate(entry.date);
-  return (bmr + num(entry.act)) - num(entry.in);
+  return num(entry.in) - (bmr + num(entry.act));
 }
 
 /**
@@ -622,7 +622,7 @@ async function refresh() {
   // total deficit cumulé (sur tout l'historique)
   let totalDef = 0;
   for (const e of entries) totalDef += await deficitOf(e);
-  $("kgLost").textContent = `${fmt2(totalDef / kcalPerKg)} kg`;
+  $("kgLost").textContent = `${fmt2(-totalDef / kcalPerKg)} kg`;
 
   // list
   const list = $("list");
