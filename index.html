@@ -156,7 +156,7 @@
       <div class="topline">
         <div class="kg" title="Estimation basée sur 7700 kcal ≈ 1 kg (approx.)">
           <strong id="kgLost">0.00 kg</strong>
-          <span>estimés perdus (déficit cumulé)</span>
+          <span>estimés perdus (surplus/déficit cumulé)</span>
         </div>
       </div>
 
@@ -192,7 +192,8 @@
 
         <div class="meta" id="todayMeta"></div>
         <div class="hint">
-          Déficit = (BMR + activité) − consommées.
+          Convention: Déficit (kcal) = consommées − (BMR + activité).
+          Donc déficit = négatif, surplus = positif.
           Tip: tu peux aussi saisir "500+300+10" ou "500, 300, 10".
         </div>
       </div>
@@ -222,7 +223,7 @@
         <div class="card">
           <h2>Déficit par jour (inclut BMR)</h2>
           <canvas id="chart"></canvas>
-          <div class="hint">Chaque barre = (BMR du jour + activité) − consommées.</div>
+          <div class="hint">Chaque barre = consommées − (BMR + activité). Déficit = négatif.</div>
         </div>
 
         <div class="card">
@@ -399,11 +400,8 @@ function fmt2(n) {
 
 /**
  * CUMUL INPUTS
- * - Enter adds value(s) to dataset.total and clears the field
- * - Saving uses dataset.total + whatever still typed in the field (supports 500+300)
  */
 function parseAmountList(raw) {
-  // accepte: "500", "500+300+10", "500, 300 10", etc.
   const cleaned = String(raw ?? "").replace(/\s+/g, " ").trim();
   if (!cleaned) return 0;
   const parts = cleaned.split(/[+,;\n ]+/).filter(Boolean);
@@ -420,7 +418,7 @@ function setCumulativeTotal(inputId, total) {
   const el = $(inputId);
   const t = Number(total) || 0;
   el.dataset.total = String(t);
-  el.value = ""; // champ libre pour continuer à ajouter
+  el.value = "";
   el.placeholder = `Total: ${fmt(Math.round(t))}`;
 }
 
@@ -429,14 +427,6 @@ function getCumulativeTotal(inputId) {
   const base = Number(el.dataset.total || "0") || 0;
   const typed = parseAmountList(el.value);
   return base + typed;
-}
-
-function clearCumulative(inputId, placeholderText) {
-  const el = $(inputId);
-  el.dataset.total = "0";
-  el.value = "";
-  if (placeholderText) el.placeholder = placeholderText;
-  else el.placeholder = "0";
 }
 
 function enableCumulativeEntry(inputId, onChanged) {
@@ -463,7 +453,6 @@ function enableCumulativeEntry(inputId, onChanged) {
     if (typeof onChanged === "function") onChanged();
   });
 
-  // si l'user tape sans Enter, on met à jour la preview quand même
   el.addEventListener("input", () => {
     if (typeof onChanged === "function") onChanged();
   });
@@ -505,7 +494,7 @@ async function bmrForDate(dateISO) {
 }
 
 /**
- * BMR auto (Mifflin–St Jeor)
+ * BMR auto
  */
 function mifflinBmr({ sex, age, heightCm, weightKg }) {
   if (!sex) return null;
@@ -525,7 +514,10 @@ async function saveAutoProfile(p) {
 }
 
 /**
- * Deficit (negative = deficit, positive = surplus)
+ * Déficit journalier (CONVENTION)
+ * déficit = consommées - (BMR + activité)
+ * => négatif = déficit (tu perds)
+ * => positif = surplus (tu prends)
  */
 async function deficitOf(entry) {
   const bmr = await bmrForDate(entry.date);
@@ -533,7 +525,7 @@ async function deficitOf(entry) {
 }
 
 /**
- * UI state
+ * UI
  */
 let chart = null;
 
@@ -583,14 +575,17 @@ async function updateTodayMetaPreview() {
   const inTotal = getCumulativeTotal("inIn");
   const actTotal = getCumulativeTotal("inAct");
   const outTotal = bmr + actTotal;
-  const def = outTotal - inTotal;
+
+  // NOUVELLE CONVENTION
+  const deficit = inTotal - outTotal; // négatif = déficit
+  const cls = deficit < 0 ? "good" : (deficit > 0 ? "bad" : "good");
 
   const meta = [];
   meta.push(`<span class="pill">BMR : <b>${fmt(bmr)}</b></span>`);
   meta.push(`<span class="pill">In <b>${fmt(inTotal)}</b></span>`);
   meta.push(`<span class="pill">Act <b>${fmt(actTotal)}</b></span>`);
   meta.push(`<span class="pill">Out <b>${fmt(outTotal)}</b></span>`);
-  meta.push(`<span class="pill def ${def >= 0 ? "good" : "bad"}">Déficit ${def >= 0 ? "+" : ""}${fmt(def)}</span>`);
+  meta.push(`<span class="pill def ${cls}">Déficit ${deficit > 0 ? "+" : ""}${fmt(deficit)}</span>`);
 
   $("todayMeta").innerHTML = meta.join("");
 }
@@ -603,7 +598,6 @@ async function syncInputsWithSelectedDate(entries) {
     setCumulativeTotal("inIn", num(e.in));
     setCumulativeTotal("inAct", num(e.act));
   } else {
-    // nouvelle journée
     setCumulativeTotal("inIn", 0);
     setCumulativeTotal("inAct", 0);
   }
@@ -615,14 +609,15 @@ async function refresh() {
   await refreshBmrMeta();
   await refreshAutoMeta();
 
-  // IMPORTANT: quand on change de date / reload, on charge le total existant dans le mode cumul
   await syncInputsWithSelectedDate(entries);
   await updateTodayMetaPreview();
 
-  // total deficit cumulé (sur tout l'historique)
-  let totalDef = 0;
-  for (const e of entries) totalDef += await deficitOf(e);
-  $("kgLost").textContent = `${fmt2(-totalDef / kcalPerKg)} kg`;
+  // total déficit cumulé (net)
+  let totalNet = 0;
+  for (const e of entries) totalNet += await deficitOf(e);
+
+  // totalNet négatif => perte => kg perdus positifs
+  $("kgLost").textContent = `${fmt2((-totalNet) / kcalPerKg)} kg`;
 
   // list
   const list = $("list");
@@ -632,8 +627,9 @@ async function refresh() {
   for (const e of [...entries].reverse()) {
     const bmrD = await bmrForDate(e.date);
     const outTotal = bmrD + num(e.act);
-    const def = outTotal - num(e.in);
-    const defClass = def >= 0 ? "good" : "bad";
+
+    const deficit = num(e.in) - outTotal; // négatif = déficit
+    const cls = deficit < 0 ? "good" : (deficit > 0 ? "bad" : "good");
 
     const item = document.createElement("div");
     item.className = "item";
@@ -644,7 +640,7 @@ async function refresh() {
         <span class="pill">BMR <b>${fmt(bmrD)}</b></span>
         <span class="pill">Act <b>${fmt(e.act)}</b></span>
         <span class="pill">Out <b>${fmt(outTotal)}</b></span>
-        <span class="pill def ${defClass}">Déficit ${def >= 0 ? "+" : ""}${fmt(def)}</span>
+        <span class="pill def ${cls}">Déficit ${deficit > 0 ? "+" : ""}${fmt(deficit)}</span>
       </div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button class="ghost" data-edit="${e.date}">Éditer</button>
@@ -666,7 +662,6 @@ async function refresh() {
       const d = btn.getAttribute("data-edit");
       $("inDate").value = d;
 
-      // refresh() va sync les inputs (totaux) automatiquement
       showTab("journal");
       await refresh();
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -681,7 +676,7 @@ async function refresh() {
 async function renderChart(entries) {
   const labels = entries.map(e => e.date);
   const deficits = [];
-  for (const e of entries) deficits.push(await deficitOf(e));
+  for (const e of entries) deficits.push(await deficitOf(e)); // négatif = déficit
 
   const ctx = $("chart");
   if (chart) chart.destroy();
@@ -695,7 +690,11 @@ async function renderChart(entries) {
       scales: { y: { beginAtZero: false } },
       plugins: {
         legend: { display: true },
-        tooltip: { callbacks: { label: (c) => ` ${(c.parsed.y>=0?"+":"")}${fmt(c.parsed.y)} kcal` } }
+        tooltip: {
+          callbacks: {
+            label: (c) => ` ${(c.parsed.y >= 0 ? "+" : "")}${fmt(c.parsed.y)} kcal`
+          }
+        }
       }
     }
   });
@@ -726,9 +725,10 @@ function renderStreak(entries) {
 }
 
 async function renderStats(entries) {
-  let totalDef = 0;
-  for (const e of entries) totalDef += await deficitOf(e);
-  const avgDef = entries.length ? totalDef / entries.length : 0;
+  let totalNet = 0;
+  for (const e of entries) totalNet += await deficitOf(e);
+
+  const avg = entries.length ? (totalNet / entries.length) : 0;
 
   const set = new Set(entries.map(e => e.date));
   const today = new Date(); today.setHours(0,0,0,0);
@@ -746,7 +746,7 @@ async function renderStats(entries) {
     <div style="display:grid; gap:8px;">
       <div class="pill">Entrées totales: <b>${fmt(entries.length)}</b></div>
       <div class="pill">Jours remplis (14j): <b>${fmt(hasCount)}</b> / 14</div>
-      <div class="pill">Déficit moyen: <b>${avgDef>=0?"+":""}${fmt(avgDef)}</b> kcal/j</div>
+      <div class="pill">Déficit moyen: <b>${avg >= 0 ? "+" : ""}${fmt(avg)}</b> kcal/j</div>
     </div>
   `;
 }
@@ -805,12 +805,15 @@ $("fileImport").addEventListener("change", async (ev) => {
 });
 
 /**
- * Events
+ * Tabs
  */
 $("tabJournal").addEventListener("click", () => showTab("journal"));
 $("tabGraph").addEventListener("click", () => showTab("graph"));
 $("tabSettings").addEventListener("click", () => showTab("settings"));
 
+/**
+ * Save
+ */
 $("btnSave").addEventListener("click", async () => {
   const date = $("inDate").value;
   if (!date) return alert("Choisis une date.");
@@ -821,8 +824,6 @@ $("btnSave").addEventListener("click", async () => {
   if (inCal < 0 || act < 0) return alert("Valeurs invalides.");
 
   await putEntry({ date, in: inCal, act, updatedAt: Date.now() });
-
-  // après save, on recharge depuis la DB (ça remettra les placeholders "Total: ...")
   await refresh();
 });
 
@@ -887,18 +888,15 @@ async function initAutoFromSaved() {
 }
 
 /**
- * Init + migration:
- * if older entries had "out" field, map -> act
+ * Init + migration
  */
 (async function init() {
   $("inDate").value = todayISO();
   $("setBmrFrom").value = todayISO();
 
-  // enable cumulative mode on inputs
   enableCumulativeEntry("inIn", updateTodayMetaPreview);
   enableCumulativeEntry("inAct", updateTodayMetaPreview);
 
-  // migrate old entry shape if needed
   const entries = await getAllEntries();
   let didMigrate = false;
   for (const e of entries) {
