@@ -102,7 +102,6 @@
       cursor: pointer;
     }
     .row { display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items:end; }
-    .row2 { display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items:end; }
     .rowSettings { display:grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items:end; }
     .rowAuto { display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; align-items:end; }
     .meta { display:flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; color: var(--muted); font-size: 12px; }
@@ -143,7 +142,7 @@
 
     @media (max-width: 920px) {
       .row { grid-template-columns: 1fr; }
-      .row2, .rowAuto { grid-template-columns: 1fr 1fr; }
+      .rowAuto { grid-template-columns: 1fr 1fr; }
       .rowSettings { grid-template-columns: 1fr; }
       .item { grid-template-columns: 1fr; }
       .split { grid-template-columns: 1fr; }
@@ -181,12 +180,12 @@
             <input id="inDate" type="date" />
           </div>
           <div>
-            <label>Calories consommées</label>
-            <input id="inIn" type="number" inputmode="numeric" min="0" placeholder="ex: 1850" />
+            <label>Calories consommées (cumul: tape un nombre + Entrée)</label>
+            <input id="inIn" type="text" inputmode="decimal" placeholder="ex: 500 ↵ puis 300 ↵ puis 10 ↵" />
           </div>
           <div>
-            <label>Calories dépensées (activité)</label>
-            <input id="inAct" type="number" inputmode="numeric" min="0" placeholder="ex: 450" />
+            <label>Calories dépensées (activité) (cumul: tape un nombre + Entrée)</label>
+            <input id="inAct" type="text" inputmode="decimal" placeholder="ex: 200 ↵ puis 150 ↵" />
           </div>
           <button class="primary" id="btnSave">Ajouter / Mettre à jour</button>
         </div>
@@ -194,7 +193,7 @@
         <div class="meta" id="todayMeta"></div>
         <div class="hint">
           Déficit = (BMR + activité) − consommées.
-          Le BMR est calculable automatiquement en Réglages.
+          Tip: tu peux aussi saisir "500+300+10" ou "500, 300, 10".
         </div>
       </div>
 
@@ -302,7 +301,7 @@
  * IndexedDB
  * stores:
  * - entries: { date, in, act, updatedAt }
- * - settings: keys:
+ * - settings:
  *    - bmr_history: [{ fromDate, bmr }]
  *    - auto_profile: { sex, age, heightCm, weightKg }
  */
@@ -399,6 +398,78 @@ function fmt2(n) {
 }
 
 /**
+ * CUMUL INPUTS
+ * - Enter adds value(s) to dataset.total and clears the field
+ * - Saving uses dataset.total + whatever still typed in the field (supports 500+300)
+ */
+function parseAmountList(raw) {
+  // accepte: "500", "500+300+10", "500, 300 10", etc.
+  const cleaned = String(raw ?? "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return 0;
+  const parts = cleaned.split(/[+,;\n ]+/).filter(Boolean);
+
+  let sum = 0;
+  for (const p of parts) {
+    const v = Number(String(p).replace(",", "."));
+    if (Number.isFinite(v)) sum += v;
+  }
+  return sum;
+}
+
+function setCumulativeTotal(inputId, total) {
+  const el = $(inputId);
+  const t = Number(total) || 0;
+  el.dataset.total = String(t);
+  el.value = ""; // champ libre pour continuer à ajouter
+  el.placeholder = `Total: ${fmt(Math.round(t))}`;
+}
+
+function getCumulativeTotal(inputId) {
+  const el = $(inputId);
+  const base = Number(el.dataset.total || "0") || 0;
+  const typed = parseAmountList(el.value);
+  return base + typed;
+}
+
+function clearCumulative(inputId, placeholderText) {
+  const el = $(inputId);
+  el.dataset.total = "0";
+  el.value = "";
+  if (placeholderText) el.placeholder = placeholderText;
+  else el.placeholder = "0";
+}
+
+function enableCumulativeEntry(inputId, onChanged) {
+  const el = $(inputId);
+  if (!el.dataset.total) el.dataset.total = "0";
+
+  el.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+
+    const add = parseAmountList(el.value);
+    if (!add) {
+      el.value = "";
+      return;
+    }
+
+    const current = Number(el.dataset.total || "0") || 0;
+    const next = current + add;
+
+    el.dataset.total = String(next);
+    el.value = "";
+    el.placeholder = `Total: ${fmt(Math.round(next))}`;
+
+    if (typeof onChanged === "function") onChanged();
+  });
+
+  // si l'user tape sans Enter, on met à jour la preview quand même
+  el.addEventListener("input", () => {
+    if (typeof onChanged === "function") onChanged();
+  });
+}
+
+/**
  * BMR history
  */
 async function getBmrHistory() {
@@ -415,7 +486,6 @@ async function addBmr(fromDate, bmr) {
   const clean = h.filter(x => x && typeof x.fromDate === "string" && Number.isFinite(Number(x.bmr)));
   clean.push({ fromDate, bmr: Number(bmr) });
   clean.sort((a,b)=>a.fromDate.localeCompare(b.fromDate));
-  // dedup same date keep last
   const dedup = [];
   for (const it of clean) {
     const last = dedup[dedup.length-1];
@@ -438,13 +508,11 @@ async function bmrForDate(dateISO) {
  * BMR auto (Mifflin–St Jeor)
  */
 function mifflinBmr({ sex, age, heightCm, weightKg }) {
-  // Validations minimal
   if (!sex) return null;
   if (!(age > 0 && heightCm > 0 && weightKg > 0)) return null;
-
   const base = (10 * weightKg) + (6.25 * heightCm) - (5 * age);
   if (sex === "male") return base + 5;
-  return base - 161; // female
+  return base - 161;
 }
 
 async function loadAutoProfile() {
@@ -457,7 +525,7 @@ async function saveAutoProfile(p) {
 }
 
 /**
- * Deficit logic: deficit = (BMR + act) - in
+ * Deficit
  */
 async function deficitOf(entry) {
   const bmr = await bmrForDate(entry.date);
@@ -465,7 +533,7 @@ async function deficitOf(entry) {
 }
 
 /**
- * UI
+ * UI state
  */
 let chart = null;
 
@@ -508,37 +576,53 @@ async function refreshAutoMeta() {
   $("autoMeta").innerHTML = meta.join("");
 }
 
+async function updateTodayMetaPreview() {
+  const t = $("inDate").value;
+  const bmr = await bmrForDate(t);
+
+  const inTotal = getCumulativeTotal("inIn");
+  const actTotal = getCumulativeTotal("inAct");
+  const outTotal = bmr + actTotal;
+  const def = outTotal - inTotal;
+
+  const meta = [];
+  meta.push(`<span class="pill">BMR : <b>${fmt(bmr)}</b></span>`);
+  meta.push(`<span class="pill">In <b>${fmt(inTotal)}</b></span>`);
+  meta.push(`<span class="pill">Act <b>${fmt(actTotal)}</b></span>`);
+  meta.push(`<span class="pill">Out <b>${fmt(outTotal)}</b></span>`);
+  meta.push(`<span class="pill def ${def >= 0 ? "good" : "bad"}">Déficit ${def >= 0 ? "+" : ""}${fmt(def)}</span>`);
+
+  $("todayMeta").innerHTML = meta.join("");
+}
+
+async function syncInputsWithSelectedDate(entries) {
+  const d = $("inDate").value;
+  const e = entries.find(x => x.date === d);
+
+  if (e) {
+    setCumulativeTotal("inIn", num(e.in));
+    setCumulativeTotal("inAct", num(e.act));
+  } else {
+    // nouvelle journée
+    setCumulativeTotal("inIn", 0);
+    setCumulativeTotal("inAct", 0);
+  }
+}
+
 async function refresh() {
   const entries = (await getAllEntries()).sort(sortByDateAsc);
 
   await refreshBmrMeta();
   await refreshAutoMeta();
 
-  // total deficit
+  // IMPORTANT: quand on change de date / reload, on charge le total existant dans le mode cumul
+  await syncInputsWithSelectedDate(entries);
+  await updateTodayMetaPreview();
+
+  // total deficit cumulé (sur tout l'historique)
   let totalDef = 0;
   for (const e of entries) totalDef += await deficitOf(e);
-
   $("kgLost").textContent = `${fmt2(totalDef / kcalPerKg)} kg`;
-
-  // today meta
-  const t = $("inDate").value;
-  const bmr = await bmrForDate(t);
-
-  const meta = [];
-  meta.push(`<span class="pill">BMR : <b>${fmt(bmr)}</b></span>`);
-  const today = entries.find(e => e.date === t);
-
-  if (today) {
-    const outTotal = bmr + num(today.act);
-    const def = outTotal - num(today.in);
-    meta.push(`<span class="pill">In <b>${fmt(today.in)}</b></span>`);
-    meta.push(`<span class="pill">Act <b>${fmt(today.act)}</b></span>`);
-    meta.push(`<span class="pill">Out <b>${fmt(outTotal)}</b></span>`);
-    meta.push(`<span class="pill def ${def >= 0 ? "good" : "bad"}">Déficit ${def >= 0 ? "+" : ""}${fmt(def)}</span>`);
-  } else {
-    meta.push(`<span class="pill">Aucune entrée ce jour.</span>`);
-  }
-  $("todayMeta").innerHTML = meta.join("");
 
   // list
   const list = $("list");
@@ -576,14 +660,13 @@ async function refresh() {
       await refresh();
     });
   });
+
   list.querySelectorAll("[data-edit]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const d = btn.getAttribute("data-edit");
-      const e = entries.find(x => x.date === d);
-      if (!e) return;
-      $("inDate").value = e.date;
-      $("inIn").value = e.in;
-      $("inAct").value = e.act;
+      $("inDate").value = d;
+
+      // refresh() va sync les inputs (totaux) automatiquement
       showTab("journal");
       await refresh();
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -730,11 +813,16 @@ $("tabSettings").addEventListener("click", () => showTab("settings"));
 
 $("btnSave").addEventListener("click", async () => {
   const date = $("inDate").value;
-  const inCal = num($("inIn").value);
-  const act = num($("inAct").value);
   if (!date) return alert("Choisis une date.");
+
+  const inCal = getCumulativeTotal("inIn");
+  const act = getCumulativeTotal("inAct");
+
   if (inCal < 0 || act < 0) return alert("Valeurs invalides.");
+
   await putEntry({ date, in: inCal, act, updatedAt: Date.now() });
+
+  // après save, on recharge depuis la DB (ça remettra les placeholders "Total: ...")
   await refresh();
 });
 
@@ -767,7 +855,6 @@ $("btnCalcBmr").addEventListener("click", async () => {
     weightKg: num($("autoWeight").value),
   };
 
-  // simple checks
   if (!(p.age >= 10 && p.age <= 120)) return alert("Âge invalide.");
   if (!(p.heightCm >= 120 && p.heightCm <= 230)) return alert("Taille invalide.");
   if (!(p.weightKg >= 30 && p.weightKg <= 250)) return alert("Poids invalide.");
@@ -800,12 +887,16 @@ async function initAutoFromSaved() {
 }
 
 /**
- * Init + small migration:
+ * Init + migration:
  * if older entries had "out" field, map -> act
  */
 (async function init() {
   $("inDate").value = todayISO();
   $("setBmrFrom").value = todayISO();
+
+  // enable cumulative mode on inputs
+  enableCumulativeEntry("inIn", updateTodayMetaPreview);
+  enableCumulativeEntry("inAct", updateTodayMetaPreview);
 
   // migrate old entry shape if needed
   const entries = await getAllEntries();
