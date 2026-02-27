@@ -692,13 +692,45 @@ async function renderChart(entries) {
 
   chart = new Chart(ctx, {
     type: "bar",
-    data: { labels, datasets: [{ label: "Déficit (kcal)", data: deficits, borderWidth: 0 }] },
+    data: {
+      labels,
+      datasets: [{
+        label: "Déficit (kcal)",
+        data: deficits,
+        borderWidth: 0,
+        barPercentage: 0.85,
+        categoryPercentage: 0.9
+      }]
+    },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      scales: { y: { beginAtZero: false } },
+      layout: { padding: { left: 8, right: 10, top: 8, bottom: 10 } },
+      scales: {
+        x: {
+          ticks: {
+            autoSkip: true,
+            maxTicksLimit: 7,
+            maxRotation: 0,
+            minRotation: 0,
+            padding: 8
+          },
+          grid: { display: false }
+        },
+        y: {
+          beginAtZero: false,
+          ticks: {
+            maxTicksLimit: 6,
+            padding: 8,
+            callback: (v) => fmt(v)
+          }
+        }
+      },
       plugins: {
-        legend: { display: true },
+        legend: {
+          position: "top",
+          labels: { padding: 14, boxWidth: 28 }
+        },
         tooltip: {
           callbacks: {
             label: (c) => ` ${(c.parsed.y >= 0 ? "+" : "")}${fmt(c.parsed.y)} kcal`
@@ -712,24 +744,17 @@ async function renderChart(entries) {
 async function renderKgChart(entries) {
   const labels = entries.map(e => e.date);
 
-  // On veut une courbe NEGATIVE (elle descend) :
-  // perteKg = - (déficitCumulé / 7700)
-  // où déficitCumulé (en kcal) est POSITIF quand tu es en déficit calorique.
-  //
-  // Or ta convention "deficitOf" renvoie NÉGATIF quand tu es en déficit.
-  // Donc (-deficitOf) est positif => parfait pour cumuler.
   let cumDefPos = 0;
   const kgSeries = [];
 
   for (const e of entries) {
-    const d = await deficitOf(e);     // négatif si déficit
-    cumDefPos += (-d);                // positif si déficit
+    const d = await deficitOf(e);      // négatif si déficit
+    cumDefPos += (-d);                 // positif si déficit
     kgSeries.push(-(cumDefPos / kcalPerKg)); // négatif = perte
   }
 
   const ctx = $("chartKg");
   if (!ctx) return;
-
   if (chartKg) chartKg.destroy();
 
   chartKg = new Chart(ctx, {
@@ -747,17 +772,34 @@ async function renderKgChart(entries) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { left: 8, right: 10, top: 8, bottom: 10 } },
       scales: {
+        x: {
+          ticks: {
+            autoSkip: true,
+            maxTicksLimit: 7,
+            maxRotation: 0,
+            minRotation: 0,
+            padding: 8
+          },
+          grid: { display: false }
+        },
         y: {
           min: -5,
           max: 0,
           ticks: {
+            stepSize: 0.5,
+            maxTicksLimit: 11,
+            padding: 8,
             callback: (v) => Number(v).toFixed(1)
           }
         }
       },
       plugins: {
-        legend: { display: true },
+        legend: {
+          position: "top",
+          labels: { padding: 14, boxWidth: 28 }
+        },
         tooltip: {
           callbacks: {
             label: (c) => ` ${Number(c.parsed.y).toFixed(2)} kg`
