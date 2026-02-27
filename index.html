@@ -138,7 +138,9 @@
     .daybox { height: 18px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,.03); }
     .daybox.on { background: rgba(36,209,143,.28); border-color: rgba(36,209,143,.40); }
     .daybox.off { background: rgba(255,255,255,.02); }
-    canvas { width: 100% !important; height: 340px !important; }
+
+    #chart { width: 100% !important; height: 340px !important; }
+    #chartKg { width: 100% !important; height: 260px !important; }
 
     @media (max-width: 920px) {
       .row { grid-template-columns: 1fr; }
@@ -224,6 +226,12 @@
           <h2>Déficit par jour (inclut BMR)</h2>
           <canvas id="chart"></canvas>
           <div class="hint">Chaque barre = consommées − (BMR + activité). Déficit = négatif.</div>
+
+          <hr style="border:0; border-top:1px solid var(--border); margin:14px 0;">
+
+          <h2>Perte de poids (kg) — objectif -5 kg</h2>
+          <canvas id="chartKg"></canvas>
+          <div class="hint">Courbe = déficit cumulé converti en kg (≈ 7700 kcal = 1 kg). Axe verrouillé de 0 à -5 kg.</div>
         </div>
 
         <div class="card">
@@ -528,6 +536,7 @@ async function deficitOf(entry) {
  * UI
  */
 let chart = null;
+let chartKg = null;
 
 function showTab(which) {
   const journal = which === "journal";
@@ -576,7 +585,6 @@ async function updateTodayMetaPreview() {
   const actTotal = getCumulativeTotal("inAct");
   const outTotal = bmr + actTotal;
 
-  // NOUVELLE CONVENTION
   const deficit = inTotal - outTotal; // négatif = déficit
   const cls = deficit < 0 ? "good" : (deficit > 0 ? "bad" : "good");
 
@@ -669,6 +677,7 @@ async function refresh() {
   });
 
   await renderChart(entries);
+  await renderKgChart(entries);
   renderStreak(entries);
   await renderStats(entries);
 }
@@ -693,6 +702,65 @@ async function renderChart(entries) {
         tooltip: {
           callbacks: {
             label: (c) => ` ${(c.parsed.y >= 0 ? "+" : "")}${fmt(c.parsed.y)} kcal`
+          }
+        }
+      }
+    }
+  });
+}
+
+async function renderKgChart(entries) {
+  const labels = entries.map(e => e.date);
+
+  // On veut une courbe NEGATIVE (elle descend) :
+  // perteKg = - (déficitCumulé / 7700)
+  // où déficitCumulé (en kcal) est POSITIF quand tu es en déficit calorique.
+  //
+  // Or ta convention "deficitOf" renvoie NÉGATIF quand tu es en déficit.
+  // Donc (-deficitOf) est positif => parfait pour cumuler.
+  let cumDefPos = 0;
+  const kgSeries = [];
+
+  for (const e of entries) {
+    const d = await deficitOf(e);     // négatif si déficit
+    cumDefPos += (-d);                // positif si déficit
+    kgSeries.push(-(cumDefPos / kcalPerKg)); // négatif = perte
+  }
+
+  const ctx = $("chartKg");
+  if (!ctx) return;
+
+  if (chartKg) chartKg.destroy();
+
+  chartKg = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Perte (kg) estimée",
+        data: kgSeries,
+        tension: 0.35,
+        pointRadius: 0,
+        borderWidth: 5
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          min: -5,
+          max: 0,
+          ticks: {
+            callback: (v) => Number(v).toFixed(1)
+          }
+        }
+      },
+      plugins: {
+        legend: { display: true },
+        tooltip: {
+          callbacks: {
+            label: (c) => ` ${Number(c.parsed.y).toFixed(2)} kg`
           }
         }
       }
