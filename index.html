@@ -139,8 +139,10 @@
     .daybox.on { background: rgba(36,209,143,.28); border-color: rgba(36,209,143,.40); }
     .daybox.off { background: rgba(255,255,255,.02); }
 
-    #chart { width: 100% !important; height: 340px !important; }
-    #chartKg { width: 100% !important; height: 260px !important; }
+    /* IMPORTANT: on n’écrase PLUS tous les canvas */
+    .chartBox { width: 100%; }
+    .chartTall { height: 520px !important; }
+    .chartMid { height: 420px !important; }
 
     @media (max-width: 920px) {
       .row { grid-template-columns: 1fr; }
@@ -148,6 +150,8 @@
       .rowSettings { grid-template-columns: 1fr; }
       .item { grid-template-columns: 1fr; }
       .split { grid-template-columns: 1fr; }
+      .chartTall { height: 460px !important; }
+      .chartMid { height: 380px !important; }
     }
   </style>
 </head>
@@ -194,8 +198,7 @@
 
         <div class="meta" id="todayMeta"></div>
         <div class="hint">
-          Convention: Déficit (kcal) = consommées − (BMR + activité).
-          Donc déficit = négatif, surplus = positif.
+          Convention: Déficit (kcal) = consommées − (BMR + activité). Donc déficit = négatif, surplus = positif.
           Tip: tu peux aussi saisir "500+300+10" ou "500, 300, 10".
         </div>
       </div>
@@ -224,13 +227,17 @@
       <div class="split">
         <div class="card">
           <h2>Déficit par jour (inclut BMR)</h2>
-          <canvas id="chart"></canvas>
+          <div class="chartBox chartTall">
+            <canvas id="chartDeficit"></canvas>
+          </div>
           <div class="hint">Chaque barre = consommées − (BMR + activité). Déficit = négatif.</div>
 
           <hr style="border:0; border-top:1px solid var(--border); margin:14px 0;">
 
           <h2>Perte de poids (kg) — objectif -5 kg</h2>
-          <canvas id="chartKg"></canvas>
+          <div class="chartBox chartMid">
+            <canvas id="chartKg"></canvas>
+          </div>
           <div class="hint">Courbe = déficit cumulé converti en kg (≈ 7700 kcal = 1 kg). Axe verrouillé de 0 à -5 kg.</div>
         </div>
 
@@ -394,6 +401,12 @@ function todayISO() {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
+function shortDate(iso) {
+  // "2026-02-18" -> "18/02"
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  return `${m[3]}/${m[2]}`;
+}
 function num(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
@@ -535,7 +548,7 @@ async function deficitOf(entry) {
 /**
  * UI
  */
-let chart = null;
+let chartDef = null;
 let chartKg = null;
 
 function showTab(which) {
@@ -620,14 +633,11 @@ async function refresh() {
   await syncInputsWithSelectedDate(entries);
   await updateTodayMetaPreview();
 
-  // total déficit cumulé (net)
   let totalNet = 0;
   for (const e of entries) totalNet += await deficitOf(e);
 
-  // totalNet négatif => perte => kg perdus positifs
   $("kgLost").textContent = `${fmt2((-totalNet) / kcalPerKg)} kg`;
 
-  // list
   const list = $("list");
   list.innerHTML = "";
   $("emptyState").style.display = entries.length ? "none" : "block";
@@ -669,28 +679,47 @@ async function refresh() {
     btn.addEventListener("click", async () => {
       const d = btn.getAttribute("data-edit");
       $("inDate").value = d;
-
       showTab("journal");
       await refresh();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
   });
 
-  await renderChart(entries);
+  await renderDeficitChart(entries);
   await renderKgChart(entries);
+
   renderStreak(entries);
   await renderStats(entries);
 }
 
-async function renderChart(entries) {
+function axisCommon() {
+  return {
+    x: {
+      grid: { display: false },
+      ticks: {
+        autoSkip: true,
+        maxTicksLimit: 8,
+        maxRotation: 0,
+        minRotation: 0,
+        padding: 10,
+        callback: function(value) {
+          const label = this.getLabelForValue(value);
+          return shortDate(label);
+        }
+      }
+    }
+  };
+}
+
+async function renderDeficitChart(entries) {
   const labels = entries.map(e => e.date);
   const deficits = [];
   for (const e of entries) deficits.push(await deficitOf(e)); // négatif = déficit
 
-  const ctx = $("chart");
-  if (chart) chart.destroy();
+  const ctx = $("chartDeficit");
+  if (chartDef) chartDef.destroy();
 
-  chart = new Chart(ctx, {
+  chartDef = new Chart(ctx, {
     type: "bar",
     data: {
       labels,
@@ -705,35 +734,21 @@ async function renderChart(entries) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { left: 8, right: 10, top: 8, bottom: 10 } },
+      layout: { padding: { left: 8, right: 10, top: 8, bottom: 6 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: (c) => ` ${(c.parsed.y >= 0 ? "+" : "")}${fmt(c.parsed.y)} kcal` }
+        }
+      },
       scales: {
-        x: {
-          ticks: {
-            autoSkip: true,
-            maxTicksLimit: 7,
-            maxRotation: 0,
-            minRotation: 0,
-            padding: 8
-          },
-          grid: { display: false }
-        },
+        ...axisCommon(),
         y: {
           beginAtZero: false,
           ticks: {
             maxTicksLimit: 6,
-            padding: 8,
+            padding: 10,
             callback: (v) => fmt(v)
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          position: "top",
-          labels: { padding: 14, boxWidth: 28 }
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => ` ${(c.parsed.y >= 0 ? "+" : "")}${fmt(c.parsed.y)} kcal`
           }
         }
       }
@@ -744,17 +759,16 @@ async function renderChart(entries) {
 async function renderKgChart(entries) {
   const labels = entries.map(e => e.date);
 
-  let cumDefPos = 0;
+  let cumDefPos = 0; // déficit => positif
   const kgSeries = [];
 
   for (const e of entries) {
-    const d = await deficitOf(e);      // négatif si déficit
-    cumDefPos += (-d);                 // positif si déficit
+    const d = await deficitOf(e);     // négatif si déficit
+    cumDefPos += (-d);               // positif si déficit
     kgSeries.push(-(cumDefPos / kcalPerKg)); // négatif = perte
   }
 
   const ctx = $("chartKg");
-  if (!ctx) return;
   if (chartKg) chartKg.destroy();
 
   chartKg = new Chart(ctx, {
@@ -772,37 +786,21 @@ async function renderKgChart(entries) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { left: 8, right: 10, top: 8, bottom: 10 } },
+      layout: { padding: { left: 8, right: 10, top: 8, bottom: 6 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (c) => ` ${Number(c.parsed.y).toFixed(2)} kg` } }
+      },
       scales: {
-        x: {
-          ticks: {
-            autoSkip: true,
-            maxTicksLimit: 7,
-            maxRotation: 0,
-            minRotation: 0,
-            padding: 8
-          },
-          grid: { display: false }
-        },
+        ...axisCommon(),
         y: {
           min: -5,
           max: 0,
           ticks: {
-            stepSize: 0.5,
-            maxTicksLimit: 11,
-            padding: 8,
+            stepSize: 1,
+            maxTicksLimit: 6,
+            padding: 10,
             callback: (v) => Number(v).toFixed(1)
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          position: "top",
-          labels: { padding: 14, boxWidth: 28 }
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => ` ${Number(c.parsed.y).toFixed(2)} kg`
           }
         }
       }
